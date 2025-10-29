@@ -56,7 +56,7 @@ try {
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <Triggers>
     <TimeTrigger>
-      <StartBoundary>$(Get-Date).AddSeconds(30).ToString('s')</StartBoundary>
+      <StartBoundary>$((Get-Date).AddSeconds(30).ToString('yyyy-MM-ddTHH:mm:ss'))</StartBoundary>
       <Enabled>true</Enabled>
     </TimeTrigger>
   </Triggers>
