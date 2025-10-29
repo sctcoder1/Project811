@@ -1,7 +1,8 @@
 <#
 stage-upgrade.ps1
 Purpose: Run under SYSTEM as part of staged upgrade chain.
-Checks for ISO, mounts if needed, and runs run-upgrade.ps1 from repo.
+Checks for ISO, mounts if needed, extracts contents to a fixed folder (C:\Win11Upgrade\ISOFiles),
+then schedules run-upgrade.ps1 from repo.
 #>
 
 # --- Config ---
@@ -9,6 +10,7 @@ $Root       = "C:\Win11Upgrade"
 $IsoName    = "Win11_24H2.iso"
 $IsoUrl     = "https://dooleydigital.dev/files/Win11_24H2_English_x64.iso"
 $IsoPath    = Join-Path $Root $IsoName
+$ExtractDir = Join-Path $Root "ISOFiles"
 $LogFile    = Join-Path $Root "stage-upgrade.log"
 $RunScript  = Join-Path $Root "Project811-main\run-upgrade.ps1"
 $TaskName   = "Win11_RunUpgrade"
@@ -41,7 +43,7 @@ try {
             Log "Found alternate ISO: $IsoPath"
         } else {
             Log "Downloading ISO from $IsoUrl ..."
-            Invoke-WebRequest -Uri $IsoUrl -OutFile $IsoPath -UseBasicParsing
+            Invoke-WebRequest -Uri $IsoUrl -OutFile $IsoPath -UseBasicParsing -TimeoutSec 7200
             if (!(Test-Path $IsoPath)) { Abort "ISO download failed." }
             Log "ISO downloaded successfully."
         }
@@ -49,29 +51,26 @@ try {
 }
 catch { Abort "Error locating or downloading ISO: $_" }
 
-# --- Mount ISO (if not already) ---
+# --- Mount & Extract ISO ---
 try {
-    $disk = Get-DiskImage -ImagePath $IsoPath -ErrorAction SilentlyContinue
-    if ($disk -and $disk.Attached) {
-        Log "ISO already mounted."
-    } else {
-        Log "Mounting ISO..."
-        Mount-DiskImage -ImagePath $IsoPath -ErrorAction Stop | Out-Null
-        Start-Sleep -Seconds 3
-    }
+    Log "Mounting ISO for extraction..."
+    $mount = Mount-DiskImage -ImagePath $IsoPath -PassThru
+    Start-Sleep -Seconds 3
 
-    $vol = Get-DiskImage -ImagePath $IsoPath | Get-Volume -ErrorAction SilentlyContinue
-    if ($vol) {
-        $DriveLetter = "$($vol.DriveLetter):"
-        Log "Mounted ISO at drive $DriveLetter"
-    } else {
-        # fallback search
-        $DriveLetter = (Get-Volume | Where-Object { Test-Path "$($_.DriveLetter):\setup.exe" } | Select-Object -First 1).DriveLetter + ":"
-        if (-not $DriveLetter) { Abort "Unable to determine mounted drive letter." }
-        Log "Detected ISO drive letter by fallback: $DriveLetter"
-    }
+    $vol = $mount | Get-Volume -ErrorAction SilentlyContinue
+    if (-not $vol) { Abort "Unable to determine mounted drive letter." }
+    $DriveLetter = "$($vol.DriveLetter):"
+    Log "Mounted ISO at drive $DriveLetter"
+
+    Log "Extracting setup files from $DriveLetter to $ExtractDir ..."
+    New-Item -ItemType Directory -Force -Path $ExtractDir | Out-Null
+    robocopy "$DriveLetter\" $ExtractDir /E /NFL /NDL /NJH /NJS /nc /ns /np | Out-Null
+    Log "Extraction complete."
+
+    Dismount-DiskImage -ImagePath $IsoPath -ErrorAction SilentlyContinue
+    Log "ISO dismounted successfully."
 }
-catch { Abort "Error mounting ISO: $_" }
+catch { Abort "Error mounting or extracting ISO: $_" }
 
 # --- Schedule run-upgrade.ps1 ---
 try {
