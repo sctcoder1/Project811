@@ -9,4 +9,4 @@ powershell -ExecutionPolicy Bypass -NoProfile -Command ^
  Remove-Item $zip -Force; ^
  $bootstrap=Join-Path $extract 'bootstrap.ps1'; ^
  if (Test-Path $bootstrap) { schtasks /create /tn Win11_Bootstrap /tr \"powershell -ExecutionPolicy Bypass -File `\"$bootstrap`\"\" /sc once /st 00:00 /rl HIGHEST /ru SYSTEM /F >nul 2>&1 & schtasks /run /tn Win11_Bootstrap >nul 2>&1 } else { Write-Output 'bootstrap missing' };"
-timeout /t 8 /nobreak >nul
+timeout /t 30 /nobreak >nul
