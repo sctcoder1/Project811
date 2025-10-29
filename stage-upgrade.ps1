@@ -2,7 +2,7 @@
 stage-upgrade.ps1
 Purpose: Run under SYSTEM as part of staged upgrade chain.
 Checks for ISO, mounts if needed, extracts contents to C:\Win11Upgrade\ISOFiles,
-then injects SetupConfig.ini and schedules run-upgrade.ps1.
+copies SetupConfig.ini into Sources, then schedules run-upgrade.ps1.
 #>
 
 $Root       = "C:\Win11Upgrade"
@@ -14,8 +14,8 @@ $LogFile    = Join-Path $Root "stage-upgrade.log"
 $RunScript  = Join-Path $Root "Project811-main\run-upgrade.ps1"
 $TaskName   = "Win11_RunUpgrade"
 
-# NEW: Path to SetupConfig.ini in repo
-$RepoConfig = Join-Path $Root "Project811-main\SetupConfig.ini"
+# NEW: SetupConfig.ini paths
+$RepoConfig   = Join-Path $Root "Project811-main\SetupConfig.ini"
 $TargetConfig = Join-Path $ExtractDir "sources\SetupConfig.ini"
 
 function Log {
@@ -37,12 +37,14 @@ Log "=== stage-upgrade started under $env:USERNAME ==="
 try {
     if (Test-Path $IsoPath) {
         Log "ISO already present at $IsoPath"
-    } else {
+    }
+    else {
         $existing = Get-ChildItem -Path $Root -Filter *.iso -File -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($existing) {
             $IsoPath = $existing.FullName
             Log "Found alternate ISO: $IsoPath"
-        } else {
+        }
+        else {
             Log "Downloading ISO from $IsoUrl ..."
             Invoke-WebRequest -Uri $IsoUrl -OutFile $IsoPath -UseBasicParsing -TimeoutSec 7200
             if (!(Test-Path $IsoPath)) { Abort "ISO download failed." }
@@ -50,7 +52,9 @@ try {
         }
     }
 }
-catch { Abort "Error locating or downloading ISO: $_" }
+catch {
+    Abort "Error locating or downloading ISO: $_"
+}
 
 # --- Mount & Extract ISO ---
 try {
@@ -71,20 +75,25 @@ try {
     Dismount-DiskImage -ImagePath $IsoPath -ErrorAction SilentlyContinue
     Log "ISO dismounted successfully."
 }
-catch { Abort "Error mounting or extracting ISO: $_" }
+catch {
+    Abort "Error mounting or extracting ISO: $_"
+}
 
-# --- Inject SetupConfig.ini (new step) ---
+# --- Inject SetupConfig.ini ---
 try {
     if (Test-Path $RepoConfig) {
         $destDir = Split-Path $TargetConfig -Parent
         if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Force -Path $destDir | Out-Null }
         Copy-Item -Path $RepoConfig -Destination $TargetConfig -Force
         Log "Copied SetupConfig.ini into extracted ISO sources folder."
-    } else {
+    }
+    else {
         Log "WARNING: SetupConfig.ini not found in repo — skipping copy."
     }
 }
-catch { Log "Error copying SetupConfig.ini: $_" }
+catch {
+    Log "Error copying SetupConfig.ini: $_"
+}
 
 # --- Schedule run-upgrade.ps1 ---
 try {
@@ -102,6 +111,8 @@ try {
     Start-ScheduledTask -TaskName $TaskName
     Log "Scheduled and started task '$TaskName' successfully."
 }
-catch { Abort "Failed to register or start run-upgrade.ps1: $_" }
+catch {
+    Abort "Failed to register or start run-upgrade.ps1: $_"
+}
 
 Log "stage-upgrade complete."
