@@ -8,7 +8,7 @@
   <Triggers>
     <!-- Generic placeholder; Bootstrap or Stage script sets real start time -->
     <TimeTrigger>
-      <StartBoundary>2025-01-01T00:00:00</StartBoundary>
+      <StartBoundary>$((Get-Date).AddSeconds(30).ToString('yyyy-MM-ddTHH:mm:ss'))</StartBoundary>
       <Enabled>true</Enabled>
     </TimeTrigger>
   </Triggers>
