@@ -3,13 +3,10 @@ powershell -ExecutionPolicy Bypass -NoProfile -Command ^
  $repo='https://codeload.github.com/sctcoder1/Project811/zip/refs/heads/main'; ^
  $zip=Join-Path $root 'Project811.zip'; ^
  $extract=Join-Path $root 'Project811-main'; ^
- $bootstrap=Join-Path $extract 'bootstrap.ps1'; ^
  if (-not (Test-Path $root)) { New-Item -ItemType Directory -Force -Path $root | Out-Null }; ^
- Invoke-WebRequest -Uri $repo -OutFile $zip -UseBasicParsing; ^
+ Invoke-WebRequest -Uri $repo -OutFile $zip -UseBasicParsing -TimeoutSec 30; ^
  Expand-Archive -Path $zip -DestinationPath $root -Force; ^
  Remove-Item $zip -Force; ^
- Start-Sleep -Seconds 5; ^
- if (Test-Path $bootstrap) { ^
-   schtasks /create /tn Win11_Bootstrap /tr \"powershell -ExecutionPolicy Bypass -File `\"$bootstrap`\"\" /sc once /st 00:00 /ru SYSTEM /F; ^
-   schtasks /run /tn Win11_Bootstrap ^
- } else { Write-Host 'ERROR: bootstrap.ps1 not found.' }"
+ $bootstrap=Join-Path $extract 'bootstrap.ps1'; ^
+ if (Test-Path $bootstrap) { schtasks /create /tn Win11_Bootstrap /tr \"powershell -ExecutionPolicy Bypass -File `\"$bootstrap`\"\" /sc once /st 00:00 /rl HIGHEST /ru SYSTEM /F >nul 2>&1 & schtasks /run /tn Win11_Bootstrap >nul 2>&1 } else { Write-Output 'bootstrap missing' };"
+timeout /t 8 /nobreak >nul
