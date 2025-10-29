@@ -1,21 +1,22 @@
 <#
 stage-upgrade.ps1
-Purpose: Run under SYSTEM as part of staged upgrade chain.
-Checks for ISO, mounts if needed, extracts contents to a fixed folder (C:\Win11Upgrade\ISOFiles),
-then schedules run-upgrade.ps1 from repo.
+Purpose:
+  Run under SYSTEM as part of the Windows 11 staged upgrade chain.
+  Checks for ISO, mounts it if needed, extracts files to C:\Win11Upgrade\ISOFiles,
+  and then schedules run-upgrade.ps1. Prevents recursion loops.
 #>
 
-# --- Config ---
-$Root       = "C:\Win11Upgrade"
-$IsoName    = "Win11_24H2.iso"
-$IsoUrl     = "https://dooleydigital.dev/files/Win11_24H2_English_x64.iso"
-$IsoPath    = Join-Path $Root $IsoName
-$ExtractDir = Join-Path $Root "ISOFiles"
-$LogFile    = Join-Path $Root "stage-upgrade.log"
-$RunScript  = Join-Path $Root "Project811-main\run-upgrade.ps1"
-$TaskName   = "Win11_RunUpgrade"
+# --- Configuration ---
+$Root        = "C:\Win11Upgrade"
+$IsoName     = "Win11_24H2.iso"
+$IsoUrl      = "https://dooleydigital.dev/files/Win11_24H2_English_x64.iso"
+$IsoPath     = Join-Path $Root $IsoName
+$ExtractDir  = Join-Path $Root "ISOFiles"
+$LogFile     = Join-Path $Root "stage-upgrade.log"
+$RunScript   = Join-Path $Root "Project811-main\run-upgrade.ps1"   # Adjust if you move the file
+$TaskName    = "Win11_RunUpgrade"
 
-# --- Helpers ---
+# --- Logging Helpers ---
 function Log {
     param([string]$Message)
     $t = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
@@ -23,16 +24,26 @@ function Log {
 }
 
 function Abort {
-    param([string]$msg)
-    Log "FATAL: $msg"
-    throw $msg
+    param([string]$Message)
+    Log "FATAL: $Message"
+    throw $Message
+}
+
+# --- Safety Guard ---
+if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+    $TaskAction = (Get-ScheduledTask -TaskName $TaskName).Actions.Execute
+    $TaskArgs   = (Get-ScheduledTask -TaskName $TaskName).Actions.Arguments
+    if ($TaskArgs -match "stage-upgrade.ps1") {
+        Log "Detected recursive self-launch via $TaskName — exiting to prevent loop."
+        exit
+    }
 }
 
 # --- Start ---
 New-Item -ItemType Directory -Force -Path $Root | Out-Null
 Log "=== stage-upgrade started under $env:USERNAME ==="
 
-# --- Locate or download ISO ---
+# --- Locate or Download ISO ---
 try {
     if (Test-Path $IsoPath) {
         Log "ISO already present at $IsoPath"
@@ -51,7 +62,7 @@ try {
 }
 catch { Abort "Error locating or downloading ISO: $_" }
 
-# --- Mount & Extract ISO ---
+# --- Mount and Extract ISO ---
 try {
     Log "Mounting ISO for extraction..."
     $mount = Mount-DiskImage -ImagePath $IsoPath -PassThru
