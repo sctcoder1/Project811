@@ -1,18 +1,25 @@
 <#
-run-upgrade.ps1
-Purpose: Executes the Windows 11 in-place upgrade silently, handling reboot logic
-depending on user presence. Runs under SYSTEM.
+stage-upgrade.ps1
+Purpose: Run under SYSTEM as part of staged upgrade chain.
+Checks for ISO, mounts if needed, extracts contents to a fixed folder (C:\Win11Upgrade\ISOFiles),
+then schedules run-upgrade.ps1 from repo.
 #>
 
-$Root     = "C:\Win11Upgrade"
-$LogFile  = Join-Path $Root "run-upgrade.log"
-$IsoPath  = Join-Path $Root "Win11_24H2.iso"
+# --- Config ---
+$Root       = "C:\Win11Upgrade"
+$IsoName    = "Win11_24H2.iso"
+$IsoUrl     = "https://dooleydigital.dev/files/Win11_24H2_English_x64.iso"
+$IsoPath    = Join-Path $Root $IsoName
+$ExtractDir = Join-Path $Root "ISOFiles"
+$LogFile    = Join-Path $Root "stage-upgrade.log"
+$RunScript  = Join-Path $Root "Project811-main\run-upgrade.ps1"
+$TaskName   = "Win11_RunUpgrade"
 
-# --- Logging helper ---
+# --- Helpers ---
 function Log {
-    param([string]$msg)
+    param([string]$Message)
     $t = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-    Add-Content -Path $LogFile -Value "[$t] $msg"
+    Add-Content -Path $LogFile -Value "[$t] $Message"
 }
 
 function Abort {
@@ -21,93 +28,66 @@ function Abort {
     throw $msg
 }
 
-Log "=== run-upgrade started under $env:USERNAME ==="
+# --- Start ---
+New-Item -ItemType Directory -Force -Path $Root | Out-Null
+Log "=== stage-upgrade started under $env:USERNAME ==="
 
-# --- Find mounted ISO drive ---
+# --- Locate or download ISO ---
 try {
-    $disk = Get-DiskImage -ImagePath $IsoPath -ErrorAction SilentlyContinue
-    if ($disk -and $disk.Attached) {
-        $vol = $disk | Get-Volume -ErrorAction SilentlyContinue
-        if ($vol) {
-            $DriveLetter = "$($vol.DriveLetter):"
-            Log "ISO already mounted at drive $DriveLetter"
-        }
-    }
-    if (-not $DriveLetter) {
-        Log "ISO not mounted, searching available drives..."
-        $DriveLetter = (Get-Volume | Where-Object { Test-Path "$($_.DriveLetter):\sources\setup.exe" } | Select-Object -First 1).DriveLetter + ":"
-    }
-    if (-not $DriveLetter) { Abort "Unable to determine ISO mount point." }
-    Log "Using drive $DriveLetter for setup."
-}
-catch { Abort "Error locating ISO drive: $_" }
-
-# --- Find setup.exe ---
-$SetupExe = Join-Path $DriveLetter "setup.exe"
-if (!(Test-Path $SetupExe)) { Abort "setup.exe not found at $SetupExe" }
-Log "Confirmed setup.exe exists."
-
-# --- Apply upgrade bypass registry keys ---
-try {
-    $mo = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Setup\MoSetup"
-    if (!(Test-Path $mo)) { New-Item -Path $mo -Force | Out-Null }
-    Set-ItemProperty -Path $mo -Name "AllowUpgradesWithUnsupportedTPMOrCPU" -Value 1 -Type DWord -Force
-    Log "Set MoSetup bypass key."
-}
-catch { Log "WARNING: Failed to set bypass key - $($_.Exception.Message)" }
-
-# --- Detect logged-in user ---
-try {
-    $users = (quser 2>$null)
-    if ($users -match "Active") {
-        $UserActive = $true
-        Log "Active user detected via quser."
+    if (Test-Path $IsoPath) {
+        Log "ISO already present at $IsoPath"
     } else {
-        # fallback check
-        $session = (Get-CimInstance -Class Win32_ComputerSystem).UserName
-        if ($session) {
-            $UserActive = $true
-            Log "Active user detected via Win32_ComputerSystem: $session"
+        $existing = Get-ChildItem -Path $Root -Filter *.iso -File -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($existing) {
+            $IsoPath = $existing.FullName
+            Log "Found alternate ISO: $IsoPath"
         } else {
-            $UserActive = $false
-            Log "No active user session detected."
+            Log "Downloading ISO from $IsoUrl ..."
+            Invoke-WebRequest -Uri $IsoUrl -OutFile $IsoPath -UseBasicParsing -TimeoutSec 7200
+            if (!(Test-Path $IsoPath)) { Abort "ISO download failed." }
+            Log "ISO downloaded successfully."
         }
     }
 }
-catch {
-    Log "Error checking user state: $_"
-    $UserActive = $false
-}
+catch { Abort "Error locating or downloading ISO: $_" }
 
-# --- Build setup arguments ---
-if ($UserActive) {
-    $Args = "/auto upgrade /quiet /NoReboot /Compat IgnoreWarning /DynamicUpdate Disable /Eula accept"
-    Log "User logged in — running upgrade with /NoReboot"
-} else {
-    $Args = "/auto upgrade /quiet /Compat IgnoreWarning /DynamicUpdate Disable /Eula accept"
-    Log "No user logged in — running upgrade with reboot allowed"
-}
-
-# --- Launch upgrade ---
+# --- Mount & Extract ISO ---
 try {
-    Log "Launching setup.exe..."
-    Start-Process -FilePath $SetupExe -ArgumentList $Args -WindowStyle Hidden -NoNewWindow
-    Log "setup.exe launched successfully."
-}
-catch { Abort "Failed to launch setup.exe: $_" }
+    Log "Mounting ISO for extraction..."
+    $mount = Mount-DiskImage -ImagePath $IsoPath -PassThru
+    Start-Sleep -Seconds 3
 
-# --- Optional cleanup registration ---
+    $vol = $mount | Get-Volume -ErrorAction SilentlyContinue
+    if (-not $vol) { Abort "Unable to determine mounted drive letter." }
+    $DriveLetter = "$($vol.DriveLetter):"
+    Log "Mounted ISO at drive $DriveLetter"
+
+    Log "Extracting setup files from $DriveLetter to $ExtractDir ..."
+    New-Item -ItemType Directory -Force -Path $ExtractDir | Out-Null
+    robocopy "$DriveLetter\" $ExtractDir /E /NFL /NDL /NJH /NJS /nc /ns /np | Out-Null
+    Log "Extraction complete."
+
+    Dismount-DiskImage -ImagePath $IsoPath -ErrorAction SilentlyContinue
+    Log "ISO dismounted successfully."
+}
+catch { Abort "Error mounting or extracting ISO: $_" }
+
+# --- Schedule run-upgrade.ps1 ---
 try {
-    $CleanupBat = Join-Path $Root "Cleanup_Win11Upgrade.bat"
-    if (Test-Path $CleanupBat) {
-        New-Item -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\RunOnce" -Force | Out-Null
-        Set-ItemProperty -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\RunOnce" `
-            -Name "Win11Cleanup" -Value "cmd /c `"$CleanupBat`""
-        Log "Registered cleanup script for post-upgrade."
-    } else {
-        Log "Cleanup file not found, skipping registration."
+    if (!(Test-Path $RunScript)) { Abort "Missing run-upgrade.ps1 at $RunScript" }
+
+    Log "Registering scheduled task for run-upgrade.ps1..."
+    if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+        Log "Removed previous scheduled task $TaskName"
     }
-}
-catch { Log "Warning: could not register cleanup task. $_" }
 
-Log "run-upgrade completed — system will reboot automatically if no user is logged in."
+    $action  = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -File `"$RunScript`""
+    $trigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddMinutes(1))
+    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -RunLevel Highest -User "SYSTEM" -Force | Out-Null
+    Start-ScheduledTask -TaskName $TaskName
+    Log "Scheduled and started task '$TaskName' successfully."
+}
+catch { Abort "Failed to register or start run-upgrade.ps1: $_" }
+
+Log "stage-upgrade complete."
