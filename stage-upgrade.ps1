@@ -1,118 +1,97 @@
 <#
 stage-upgrade.ps1
-Purpose: Run under SYSTEM as part of staged upgrade chain.
-Checks for ISO, mounts if needed, extracts contents to C:\Win11Upgrade\ISOFiles,
-copies SetupConfig.ini into Sources, then schedules run-upgrade.ps1.
+Purpose:
+  Run under SYSTEM (called by bootstrap).
+  Downloads ISO if missing, mounts & extracts it to C:\Win11Upgrade\ISOFiles,
+  injects SetupConfig.ini from repo, then directly executes run-upgrade.ps1.
 #>
 
-$Root       = "C:\Win11Upgrade"
-$IsoName    = "Win11_24H2.iso"
-$IsoUrl     = "https://dooleydigital.dev/files/Win11_24H2_English_x64.iso"
-$IsoPath    = Join-Path $Root $IsoName
-$ExtractDir = Join-Path $Root "ISOFiles"
-$LogFile    = Join-Path $Root "stage-upgrade.log"
-$RunScript  = Join-Path $Root "Project811-main\run-upgrade.ps1"
-$TaskName   = "Win11_RunUpgrade"
+$ErrorActionPreference = "Stop"
 
-# NEW: SetupConfig.ini paths
-$RepoConfig   = Join-Path $Root "Project811-main\SetupConfig.ini"
+# --- Config ---
+$Root        = "C:\Win11Upgrade"
+$IsoName     = "Win11_24H2.iso"
+$IsoUrl      = "https://dooleydigital.dev/files/Win11_24H2_English_x64.iso"
+$IsoPath     = Join-Path $Root $IsoName
+$ExtractDir  = Join-Path $Root "ISOFiles"
+$RepoConfig  = Join-Path $Root "Project811-main\SetupConfig.ini"
 $TargetConfig = Join-Path $ExtractDir "sources\SetupConfig.ini"
+$RunScript   = Join-Path $Root "Project811-main\run-upgrade.ps1"
+$LogFile     = Join-Path $Root "stage-upgrade.log"
 
+# --- Logging helper ---
 function Log {
-    param([string]$Message)
+    param([string]$m)
     $t = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-    Add-Content -Path $LogFile -Value "[$t] $Message"
+    Add-Content -Path $LogFile -Value "[$t] $m"
 }
 
-function Abort {
-    param([string]$msg)
-    Log "FATAL: $msg"
-    throw $msg
-}
-
-New-Item -ItemType Directory -Force -Path $Root | Out-Null
 Log "=== stage-upgrade started under $env:USERNAME ==="
 
-# --- Locate or download ISO ---
+# --- Ensure folder exists ---
+if (!(Test-Path $Root)) { New-Item -ItemType Directory -Force -Path $Root | Out-Null }
+
+# --- Verify or download ISO ---
 try {
     if (Test-Path $IsoPath) {
-        Log "ISO already present at $IsoPath"
-    }
-    else {
-        $existing = Get-ChildItem -Path $Root -Filter *.iso -File -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($existing) {
-            $IsoPath = $existing.FullName
-            Log "Found alternate ISO: $IsoPath"
-        }
-        else {
-            Log "Downloading ISO from $IsoUrl ..."
-            Invoke-WebRequest -Uri $IsoUrl -OutFile $IsoPath -UseBasicParsing -TimeoutSec 7200
-            if (!(Test-Path $IsoPath)) { Abort "ISO download failed." }
-            Log "ISO downloaded successfully."
-        }
+        Log "Found existing ISO at $IsoPath"
+    } else {
+        Log "Downloading ISO from $IsoUrl ..."
+        Invoke-WebRequest -Uri $IsoUrl -OutFile $IsoPath -UseBasicParsing -TimeoutSec 7200
+        if (!(Test-Path $IsoPath)) { throw "ISO download failed." }
+        Log "ISO downloaded successfully."
     }
 }
 catch {
-    Abort "Error locating or downloading ISO: $_"
+    Log "ERROR: Failed to locate or download ISO - $_"
+    exit 1
 }
 
-# --- Mount & Extract ISO ---
+# --- Mount & Extract ---
 try {
-    Log "Mounting ISO for extraction..."
+    Log "Mounting ISO..."
     $mount = Mount-DiskImage -ImagePath $IsoPath -PassThru
     Start-Sleep -Seconds 3
-
     $vol = $mount | Get-Volume -ErrorAction SilentlyContinue
-    if (-not $vol) { Abort "Unable to determine mounted drive letter." }
+    if (-not $vol) { throw "Unable to determine mounted drive letter." }
     $DriveLetter = "$($vol.DriveLetter):"
-    Log "Mounted ISO at drive $DriveLetter"
+    Log "Mounted at $DriveLetter"
 
-    Log "Extracting setup files from $DriveLetter to $ExtractDir ..."
-    New-Item -ItemType Directory -Force -Path $ExtractDir | Out-Null
+    if (!(Test-Path $ExtractDir)) { New-Item -ItemType Directory -Force -Path $ExtractDir | Out-Null }
+    Log "Extracting contents to $ExtractDir..."
     robocopy "$DriveLetter\" $ExtractDir /E /NFL /NDL /NJH /NJS /nc /ns /np | Out-Null
     Log "Extraction complete."
 
-    Dismount-DiskImage -ImagePath $IsoPath -ErrorAction SilentlyContinue
+    Dismount-DiskImage -ImagePath $IsoPath
     Log "ISO dismounted successfully."
 }
 catch {
-    Abort "Error mounting or extracting ISO: $_"
+    Log "ERROR: Mount or extraction failed - $_"
+    exit 1
 }
 
 # --- Inject SetupConfig.ini ---
 try {
     if (Test-Path $RepoConfig) {
         $destDir = Split-Path $TargetConfig -Parent
-        if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Force -Path $destDir | Out-Null }
+        if (!(Test-Path $destDir)) { New-Item -ItemType Directory -Force -Path $destDir | Out-Null }
         Copy-Item -Path $RepoConfig -Destination $TargetConfig -Force
         Log "Copied SetupConfig.ini into extracted ISO sources folder."
-    }
-    else {
+    } else {
         Log "WARNING: SetupConfig.ini not found in repo — skipping copy."
     }
 }
 catch {
-    Log "Error copying SetupConfig.ini: $_"
+    Log "ERROR copying SetupConfig.ini: $_"
 }
 
-# --- Schedule run-upgrade.ps1 ---
-try {
-    if (!(Test-Path $RunScript)) { Abort "Missing run-upgrade.ps1 at $RunScript" }
-
-    Log "Registering scheduled task for run-upgrade.ps1..."
-    if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
-        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
-        Log "Removed previous scheduled task $TaskName"
-    }
-
-    $action  = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -File `"$RunScript`""
-    $trigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddMinutes(1))
-    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -RunLevel Highest -User "SYSTEM" -Force | Out-Null
-    Start-ScheduledTask -TaskName $TaskName
-    Log "Scheduled and started task '$TaskName' successfully."
-}
-catch {
-    Abort "Failed to register or start run-upgrade.ps1: $_"
+# --- Run next stage ---
+if (Test-Path $RunScript) {
+    Log "Launching run-upgrade.ps1..."
+    powershell -ExecutionPolicy Bypass -NoProfile -File $RunScript
+    Log "run-upgrade.ps1 completed."
+} else {
+    Log "ERROR: run-upgrade.ps1 not found at $RunScript."
 }
 
 Log "stage-upgrade complete."
