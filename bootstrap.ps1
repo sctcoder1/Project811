@@ -1,17 +1,22 @@
-# bootstrap.ps1 (robust, idempotent)
-$Root = "C:\Win11Upgrade"
-$Log  = Join-Path $Root "bootstrap.log"
-$Lock = Join-Path $Root "bootstrap.lock"
-$Done = Join-Path $Root "bootstrap.done"
-$StageUrl = "https://raw.githubusercontent.com/sctcoder1/Project811/main/stage-upgrade.ps1"
-$StageScript = Join-Path $Root "stage-upgrade.ps1"
+$root = "C:\Win11Upgrade"
+$stage = Join-Path $root "Project811-main\stage-upgrade.ps1"
+$log  = Join-Path $root "bootstrap.log"
 
-function Write-Log {
-    param($m)
-    $t = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-    $msg = "[$t] $m"
-    Add-Content -Path $Log -Value $msg
+function Log($m) {
+    $t = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+    Add-Content -Path $log -Value "[$t] $m"
 }
 
-# Prevent concurrent runs
-if (Test-Path $
+Log "Bootstrap starting."
+if (Test-Path $stage) {
+    Log "Found stage-upgrade.ps1, scheduling..."
+    $action  = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -File `"$stage`""
+    $trigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddMinutes(1))
+    Register-ScheduledTask -TaskName "Win11_StageUpgrade" -Action $action -Trigger $trigger -RunLevel Highest -User "SYSTEM" -Force | Out-Null
+    Start-ScheduledTask -TaskName "Win11_StageUpgrade"
+    Log "Stage task registered and started."
+} else {
+    Log "ERROR: stage-upgrade.ps1 not found."
+}
+Start-Sleep -Seconds 5
+Log "Bootstrap finished."
