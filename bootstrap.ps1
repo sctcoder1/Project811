@@ -2,57 +2,56 @@
 bootstrap.ps1
 Purpose:
   Initial entry point triggered by Sophos.
-  Creates C:\Win11Upgrade, downloads or uses existing repo,
-  then schedules and starts Win11_StageUpgrade under SYSTEM.
+  Ensures C:\Win11Upgrade exists, unblocks scripts, then schedules
+  and runs stage-upgrade.ps1 under SYSTEM via a well-formed XML task.
 #>
 
 $ErrorActionPreference = "Stop"
 
 # --- Config ---
-$root  = "C:\Win11Upgrade"
-$stage = Join-Path $root "Project811-main\stage-upgrade.ps1"
-$log   = Join-Path $root "bootstrap.log"
-$task  = "Win11_StageUpgrade"
+$Root  = "C:\Win11Upgrade"
+$RepoDir = Join-Path $Root "Project811-main"
+$StageScript = Join-Path $RepoDir "stage-upgrade.ps1"
+$Log   = Join-Path $Root "bootstrap.log"
+$Task  = "Win11_StageUpgrade"
+$PsExe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+$XmlPath = Join-Path $Root "stage-task.xml"
 
 # --- Logging helper ---
 function Log($m) {
     try {
-        if (-not (Test-Path $root)) { New-Item -ItemType Directory -Force -Path $root | Out-Null }
+        if (-not (Test-Path $Root)) { New-Item -ItemType Directory -Force -Path $Root | Out-Null }
         $t = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
-        Add-Content -Path $log -Value "[$t] $m"
-    } catch {
-        Write-Host $m
-    }
+        Add-Content -Path $Log -Value "[$t] $m"
+    } catch { Write-Host $m }
 }
 
 Log "=== Bootstrap starting under $env:USERNAME ==="
 
-# --- Safety / prep ---
-# Unblock files so SYSTEM can run them
+# --- Prep ---
 try {
-    Get-ChildItem $root -Recurse -Include *.ps1 -ErrorAction SilentlyContinue | Unblock-File
-    Log "Unblocked PowerShell scripts in $root."
+    Get-ChildItem $Root -Recurse -Include *.ps1 -ErrorAction SilentlyContinue | Unblock-File
+    Log "Unblocked PowerShell scripts in $Root."
 } catch { Log "Warning: Could not unblock files. $_" }
 
-# Remove old task if present (avoids conflict)
+# Remove previous task if it exists
 try {
-    if (Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue) {
-        Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue
-        Log "Removed existing $task task."
+    if (Get-ScheduledTask -TaskName $Task -ErrorAction SilentlyContinue) {
+        Unregister-ScheduledTask -TaskName $Task -Confirm:$false -ErrorAction SilentlyContinue
+        Log "Removed old $Task task."
     }
-} catch { Log "Warning: could not remove old task. $_" }
+} catch { Log "Warning: Could not remove old task. $_" }
 
-# --- Inside bootstrap.ps1 ---
+# --- Create the scheduled task XML ---
 try {
-    if (Test-Path $stage) {
-        Log "Found stage-upgrade.ps1 at $stage"
-        $taskName = "Win11_StageUpgrade"
+    if (Test-Path $StageScript) {
+        Log "Found stage-upgrade.ps1 at $StageScript"
 
-        # Remove any previous version
-        schtasks /delete /tn $taskName /f 2>$null
+        $StageDir = Split-Path $StageScript -Parent
+        Log "Using working directory: $StageDir"
 
-        # Build XML for the task definition (correct quoting, split args)
-        $xml = @"
+        # Build XML content dynamically
+        $XMLContent = @"
 <?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <Triggers>
@@ -73,40 +72,35 @@ try {
     <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
     <AllowHardTerminate>true</AllowHardTerminate>
     <StartWhenAvailable>true</StartWhenAvailable>
-    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
-    <IdleSettings>
-      <StopOnIdleEnd>false</StopOnIdleEnd>
-      <RestartOnIdle>false</RestartOnIdle>
-    </IdleSettings>
     <AllowStartOnDemand>true</AllowStartOnDemand>
     <Enabled>true</Enabled>
     <Hidden>false</Hidden>
-    <RunOnlyIfIdle>false</RunOnlyIfIdle>
-    <DisallowStartOnRemoteAppSession>false</DisallowStartOnRemoteAppSession>
-    <UseUnifiedSchedulingEngine>true</UseUnifiedSchedulingEngine>
-    <WakeToRun>false</WakeToRun>
     <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
-    <Priority>7</Priority>
+    <UseUnifiedSchedulingEngine>true</UseUnifiedSchedulingEngine>
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe</Command>
-      <Arguments>-ExecutionPolicy Bypass -NoProfile -File "C:\Win11Upgrade\Project811-main\stage-upgrade.ps1"</Arguments>
-      <WorkingDirectory>C:\Win11Upgrade\Project811-main</WorkingDirectory>
+      <Command>$PsExe</Command>
+      <Arguments>-ExecutionPolicy Bypass -NoProfile -File `"$StageScript`"</Arguments>
+      <WorkingDirectory>$StageDir</WorkingDirectory>
     </Exec>
   </Actions>
 </Task>
 "@
 
-        $xmlPath = Join-Path $root "stage-task.xml"
-        $xml | Out-File -Encoding unicode -FilePath $xmlPath -Force
+        $XMLContent | Out-File -Encoding Unicode -FilePath $XmlPath -Force
+        Log "Created task XML at $XmlPath"
 
-        schtasks /create /tn $taskName /xml $xmlPath /ru SYSTEM /f | Out-Null
-        schtasks /run /tn $taskName | Out-Null
-        Log "Registered and started scheduled task $taskName successfully via XML method."
-    }
-    else {
-        Log "ERROR: stage-upgrade.ps1 not found at $stage"
+        # Register and run the task
+        $Create = schtasks /create /tn $Task /xml $XmlPath /ru SYSTEM /f 2>&1
+        Log "schtasks /create output: $Create"
+
+        $Run = schtasks /run /tn $Task 2>&1
+        Log "schtasks /run output: $Run"
+
+        Log "Task $Task registered and started successfully via XML."
+    } else {
+        Log "ERROR: stage-upgrade.ps1 not found at $StageScript"
     }
 }
 catch {
