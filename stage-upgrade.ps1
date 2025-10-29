@@ -2,7 +2,7 @@
 stage-upgrade.ps1
 Purpose: Run under SYSTEM as part of the Windows 11 staged upgrade chain.
 Checks for ISO, mounts/extracts contents to C:\Win11Upgrade\ISOFiles,
-then schedules run-upgrade.ps1 (not itself).
+then schedules run-upgrade.ps1 (not itself) using the prebuilt XML.
 #>
 
 $ErrorActionPreference = "Stop"
@@ -14,7 +14,7 @@ $IsoUrl      = "https://dooleydigital.dev/files/Win11_24H2_English_x64.iso"
 $IsoPath     = Join-Path $Root $IsoName
 $ExtractDir  = Join-Path $Root "ISOFiles"
 $LogFile     = Join-Path $Root "stage-upgrade.log"
-$RunScript   = "C:\Win11Upgrade\Project811-main\run-upgrade.ps1"   # ✅ Adjusted for correct file
+$XmlTemplate = "C:\Win11Upgrade\Project811-main\Task_RunUpgrade.xml"
 $TaskName    = "Win11_RunUpgrade"
 
 # --- Logging helpers ---
@@ -36,18 +36,6 @@ function Abort {
 # --- Start ---
 New-Item -ItemType Directory -Force -Path $Root | Out-Null
 Log "=== stage-upgrade started under $env:USERNAME ==="
-
-# --- Ensure the Win11_RunUpgrade task isn't pointing to this same script ---
-try {
-    $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-    if ($existing) {
-        $args = ($existing.Actions | Select-Object -First 1).Arguments
-        if ($args -match "stage-upgrade\.ps1") {
-            Log "Detected self-reference in $TaskName. Removing old task..."
-            Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
-        }
-    }
-} catch { Log "Warning checking scheduled task: $($_.Exception.Message)" }
 
 # --- Locate or download ISO ---
 try {
@@ -93,24 +81,18 @@ try {
 }
 catch { Abort "Error mounting or extracting ISO: $_" }
 
-# --- Schedule run-upgrade.ps1 ---
+# --- Schedule run-upgrade.ps1 from XML ---
 try {
-    if (!(Test-Path $RunScript)) { Abort "Missing run-upgrade.ps1 at $RunScript" }
-
-    Log "Registering scheduled task for run-upgrade.ps1..."
-    if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
-        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
-        Log "Removed previous scheduled task $TaskName"
+    if (Test-Path $XmlTemplate) {
+        Log "Importing prebuilt XML task: $XmlTemplate"
+        schtasks /delete /tn $TaskName /f 2>$null
+        schtasks /create /tn $TaskName /xml $XmlTemplate /ru SYSTEM /f | Out-Null
+        schtasks /run /tn $TaskName | Out-Null
+        Log "Task $TaskName registered and started successfully from XML."
+    } else {
+        Abort "RunUpgrade XML template not found at $XmlTemplate"
     }
-
-    $args = "-ExecutionPolicy Bypass -File `"$RunScript`""
-    $ps = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
-    $action  = New-ScheduledTaskAction -Execute $ps -Argument $args
-    $trigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddSeconds(30))
-    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -RunLevel Highest -User "SYSTEM" -Force | Out-Null
-    Start-ScheduledTask -TaskName $TaskName
-    Log "Scheduled and started task '$TaskName' successfully (file: $RunScript)."
 }
-catch { Abort "Failed to register or start run-upgrade.ps1: $_" }
+catch { Abort "Failed to register or start RunUpgrade task: $_" }
 
 Log "stage-upgrade complete."
