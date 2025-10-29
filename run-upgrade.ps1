@@ -1,93 +1,54 @@
 <#
-stage-upgrade.ps1
-Purpose: Run under SYSTEM as part of staged upgrade chain.
-Checks for ISO, mounts if needed, extracts contents to a fixed folder (C:\Win11Upgrade\ISOFiles),
-then schedules run-upgrade.ps1 from repo.
+run-upgrade.ps1
+Purpose:
+  Execute Windows 11 setup.exe silently from extracted ISO folder.
+  Assumes ISO contents are already in C:\Win11Upgrade\ISOFiles.
 #>
 
-# --- Config ---
-$Root       = "C:\Win11Upgrade"
-$IsoName    = "Win11_24H2.iso"
-$IsoUrl     = "https://dooleydigital.dev/files/Win11_24H2_English_x64.iso"
-$IsoPath    = Join-Path $Root $IsoName
-$ExtractDir = Join-Path $Root "ISOFiles"
-$LogFile    = Join-Path $Root "stage-upgrade.log"
-$RunScript  = Join-Path $Root "Project811-main\run-upgrade.ps1"
-$TaskName   = "Win11_RunUpgrade"
+$ErrorActionPreference = "Stop"
+$Root    = "C:\Win11Upgrade"
+$IsoDir  = Join-Path $Root "ISOFiles"
+$Setup   = Join-Path $IsoDir "setup.exe"
+$LogFile = Join-Path $Root "run-upgrade.log"
 
-# --- Helpers ---
-function Log {
-    param([string]$Message)
-    $t = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-    Add-Content -Path $LogFile -Value "[$t] $Message"
+function Log($m){$t=(Get-Date).ToString("yyyy-MM-dd HH:mm:ss");Add-Content -Path $LogFile -Value "[$t] $m"}
+
+Log "=== run-upgrade started under $env:USERNAME ==="
+
+if (!(Test-Path $Setup)) {
+    Log "FATAL: setup.exe not found in $IsoDir."
+    exit 1
 }
 
-function Abort {
-    param([string]$msg)
-    Log "FATAL: $msg"
-    throw $msg
-}
-
-# --- Start ---
-New-Item -ItemType Directory -Force -Path $Root | Out-Null
-Log "=== stage-upgrade started under $env:USERNAME ==="
-
-# --- Locate or download ISO ---
+# Bypass hardware checks
 try {
-    if (Test-Path $IsoPath) {
-        Log "ISO already present at $IsoPath"
-    } else {
-        $existing = Get-ChildItem -Path $Root -Filter *.iso -File -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($existing) {
-            $IsoPath = $existing.FullName
-            Log "Found alternate ISO: $IsoPath"
-        } else {
-            Log "Downloading ISO from $IsoUrl ..."
-            Invoke-WebRequest -Uri $IsoUrl -OutFile $IsoPath -UseBasicParsing -TimeoutSec 7200
-            if (!(Test-Path $IsoPath)) { Abort "ISO download failed." }
-            Log "ISO downloaded successfully."
-        }
-    }
-}
-catch { Abort "Error locating or downloading ISO: $_" }
+    $mo = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Setup\MoSetup"
+    if (!(Test-Path $mo)) { New-Item -Path $mo -Force | Out-Null }
+    Set-ItemProperty -Path $mo -Name "AllowUpgradesWithUnsupportedTPMOrCPU" -Value 1 -Type DWord -Force
+    Log "Set bypass key."
+} catch { Log "Warning: failed to set bypass key. $_" }
 
-# --- Mount & Extract ISO ---
+# Detect active user session
+$UserActive = $false
 try {
-    Log "Mounting ISO for extraction..."
-    $mount = Mount-DiskImage -ImagePath $IsoPath -PassThru
-    Start-Sleep -Seconds 3
+    $users = (quser 2>$null)
+    if ($users -match "Active") { $UserActive = $true; Log "Active user detected via quser." }
+} catch { }
 
-    $vol = $mount | Get-Volume -ErrorAction SilentlyContinue
-    if (-not $vol) { Abort "Unable to determine mounted drive letter." }
-    $DriveLetter = "$($vol.DriveLetter):"
-    Log "Mounted ISO at drive $DriveLetter"
-
-    Log "Extracting setup files from $DriveLetter to $ExtractDir ..."
-    New-Item -ItemType Directory -Force -Path $ExtractDir | Out-Null
-    robocopy "$DriveLetter\" $ExtractDir /E /NFL /NDL /NJH /NJS /nc /ns /np | Out-Null
-    Log "Extraction complete."
-
-    Dismount-DiskImage -ImagePath $IsoPath -ErrorAction SilentlyContinue
-    Log "ISO dismounted successfully."
+# Build arguments
+if ($UserActive) {
+    $Args = "/auto upgrade /quiet /NoReboot /Compat IgnoreWarning /DynamicUpdate Disable /Eula accept"
+    Log "User logged in — upgrade will not auto-reboot."
+} else {
+    $Args = "/auto upgrade /quiet /Compat IgnoreWarning /DynamicUpdate Disable /Eula accept"
+    Log "No user detected — reboot allowed."
 }
-catch { Abort "Error mounting or extracting ISO: $_" }
 
-# --- Schedule run-upgrade.ps1 ---
+# Launch setup
 try {
-    if (!(Test-Path $RunScript)) { Abort "Missing run-upgrade.ps1 at $RunScript" }
+    Log "Launching setup.exe..."
+    Start-Process -FilePath $Setup -ArgumentList $Args -WindowStyle Hidden
+    Log "Setup launched successfully."
+} catch { Log "ERROR: Failed to start setup.exe. $_" }
 
-    Log "Registering scheduled task for run-upgrade.ps1..."
-    if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
-        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
-        Log "Removed previous scheduled task $TaskName"
-    }
-
-    $action  = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -File `"$RunScript`""
-    $trigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddMinutes(1))
-    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -RunLevel Highest -User "SYSTEM" -Force | Out-Null
-    Start-ScheduledTask -TaskName $TaskName
-    Log "Scheduled and started task '$TaskName' successfully."
-}
-catch { Abort "Failed to register or start run-upgrade.ps1: $_" }
-
-Log "stage-upgrade complete."
+Log "run-upgrade complete."
