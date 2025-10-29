@@ -81,18 +81,15 @@ try {
 }
 catch { Abort "Error mounting or extracting ISO: $_" }
 
-# --- Schedule run-upgrade.ps1 from XML ---
+# --- Start pre-created RunUpgrade task ---
 try {
-    if (Test-Path $XmlTemplate) {
-        Log "Importing prebuilt XML task: $XmlTemplate"
-        schtasks /delete /tn $TaskName /f 2>$null
-        schtasks /create /tn $TaskName /xml $XmlTemplate /ru SYSTEM /f | Out-Null
-        schtasks /run /tn $TaskName | Out-Null
-        Log "Task $TaskName registered and started successfully from XML."
+    if (Get-ScheduledTask -TaskName "Win11_RunUpgrade" -ErrorAction SilentlyContinue) {
+        schtasks /run /tn "Win11_RunUpgrade" | Out-Null
+        Log "Started existing RunUpgrade task."
     } else {
-        Abort "RunUpgrade XML template not found at $XmlTemplate"
+        Log "ERROR: RunUpgrade task not found."
     }
 }
-catch { Abort "Failed to register or start RunUpgrade task: $_" }
-
-Log "stage-upgrade complete."
+catch {
+    Log "FATAL: could not start RunUpgrade task. $_"
+}
