@@ -42,23 +42,75 @@ try {
     }
 } catch { Log "Warning: could not remove old task. $_" }
 
-# --- Create task only if stage script exists ---
-if (Test-Path $stage) {
-    Log "Found stage-upgrade.ps1 at $stage"
+# --- Inside bootstrap.ps1 ---
+try {
+    if (Test-Path $stage) {
+        Log "Found stage-upgrade.ps1 at $stage"
+        $taskName = "Win11_StageUpgrade"
 
-    # Use full PowerShell path (fixes 0x1 issue)
-    $ps = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+        # Remove any previous version
+        schtasks /delete /tn $taskName /f 2>$null
 
-    # Add NoProfile and working directory
-    $args = "-ExecutionPolicy Bypass -NoProfile -File `"$stage`""
-    $action = New-ScheduledTaskAction -Execute $ps -Argument $args -WorkingDirectory (Split-Path $stage)
-    $trigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddSeconds(30))
+        # Build XML for the task definition (correct quoting, split args)
+        $xml = @"
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Triggers>
+    <TimeTrigger>
+      <StartBoundary>$(Get-Date).AddSeconds(30).ToString('s')</StartBoundary>
+      <Enabled>true</Enabled>
+    </TimeTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>SYSTEM</UserId>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <DisallowStartOnRemoteAppSession>false</DisallowStartOnRemoteAppSession>
+    <UseUnifiedSchedulingEngine>true</UseUnifiedSchedulingEngine>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe</Command>
+      <Arguments>-ExecutionPolicy Bypass -NoProfile -File "C:\Win11Upgrade\Project811-main\stage-upgrade.ps1"</Arguments>
+      <WorkingDirectory>C:\Win11Upgrade\Project811-main</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
+"@
 
-    Register-ScheduledTask -TaskName $task -Action $action -Trigger $trigger -RunLevel Highest -User "SYSTEM" -Force | Out-Null
-    Start-ScheduledTask -TaskName $task
-    Log "Registered and started scheduled task $task successfully."
-} else {
-    Log "ERROR: stage-upgrade.ps1 not found at expected path."
+        $xmlPath = Join-Path $root "stage-task.xml"
+        $xml | Out-File -Encoding unicode -FilePath $xmlPath -Force
+
+        schtasks /create /tn $taskName /xml $xmlPath /ru SYSTEM /f | Out-Null
+        schtasks /run /tn $taskName | Out-Null
+        Log "Registered and started scheduled task $taskName successfully via XML method."
+    }
+    else {
+        Log "ERROR: stage-upgrade.ps1 not found at $stage"
+    }
+}
+catch {
+    Log "FATAL during task creation: $_"
 }
 
 Start-Sleep -Seconds 5
