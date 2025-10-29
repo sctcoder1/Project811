@@ -1,15 +1,1 @@
-powershell -ExecutionPolicy Bypass -NoProfile -Command ^
-"$root='C:\Win11Upgrade'; ^
-$repo='https://codeload.github.com/sctcoder1/Project811/zip/refs/heads/main'; ^
-$zip=Join-Path $root 'Project811.zip'; ^
-$extract=Join-Path $root 'Project811-main'; ^
-$bootstrap=Join-Path $extract 'bootstrap.ps1'; ^
-if(-not(Test-Path $root)){New-Item -ItemType Directory -Force -Path $root|Out-Null}; ^
-Invoke-WebRequest -Uri $repo -OutFile $zip -UseBasicParsing; ^
-Expand-Archive -Path $zip -DestinationPath $root -Force; ^
-Remove-Item $zip -Force; ^
-if(Test-Path $bootstrap){ ^
-  schtasks /create /tn 'Win11_Bootstrap' /tr 'powershell -ExecutionPolicy Bypass -File \"%bootstrap%\"' /sc once /st 00:00 /ru SYSTEM /F; ^
-  schtasks /run /tn 'Win11_Bootstrap'; ^
-  Start-Sleep -s 25 ^
-} else { Write-Host 'ERROR: bootstrap.ps1 not found.' }"
+powershell -ExecutionPolicy Bypass -NoProfile -Command "$root='C:\Win11Upgrade';$repo='https://codeload.github.com/sctcoder1/Project811/zip/refs/heads/main';$zip=Join-Path $root 'Project811.zip';$extract=Join-Path $root 'Project811-main';$bootstrap=Join-Path $extract 'bootstrap.ps1';if(-not(Test-Path $root)){New-Item -ItemType Directory -Force -Path $root|Out-Null};Invoke-WebRequest -Uri $repo -OutFile $zip -UseBasicParsing;Expand-Archive -Path $zip -DestinationPath $root -Force;Remove-Item $zip -Force;if(Test-Path $bootstrap){schtasks /create /tn 'Win11_Bootstrap' /tr ('powershell -ExecutionPolicy Bypass -File ' + '\"' + $bootstrap + '\"') /sc once /st 00:00 /ru SYSTEM /F; schtasks /run /tn 'Win11_Bootstrap';Start-Sleep -s 25}else{Write-Host 'ERROR: bootstrap.ps1 not found.'}"
