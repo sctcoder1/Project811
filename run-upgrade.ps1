@@ -73,7 +73,10 @@ while (Get-Process -Name "ModernSetupHost" -ErrorAction SilentlyContinue) {
 Log "ModernSetupHost exited — staging phase complete."
 
 # --- Handle reboot scheduling ---
-$RebootTime = "18:00"  # 6 PM local time
+$now = Get-Date
+$rebootAt = (Get-Date -Hour 18 -Minute 0 -Second 0)
+if ($rebootAt -lt $now) { $rebootAt = $rebootAt.AddDays(1) } # if 6 PM passed, schedule next day
+
 $session = (Get-CimInstance -ClassName Win32_ComputerSystem).UserName
 
 if ($session) {
@@ -82,7 +85,7 @@ if ($session) {
     # Notify user to save work and reboot
     $msg = "Windows 11 upgrade is ready to install.`n`n" +
            "Please save all work and reboot now to continue.`n" +
-           "If you do nothing, the system will reboot automatically at 6:00 PM."
+           "If you do nothing, the system will reboot automatically at $($rebootAt.ToString('h:mm tt'))."
     try {
         msg * "$msg" /time:300
         Log "Displayed save-your-work message to active session."
@@ -90,15 +93,16 @@ if ($session) {
         Log "Failed to send message: $_"
     }
 
-    # Schedule reboot task for 6 PM
-    Log "Scheduling reboot task for 6:00 PM."
+    # Schedule reboot task
+    Log "Scheduling reboot task for $($rebootAt.ToString('yyyy-MM-dd HH:mm:ss'))."
 
+    $startBoundary = $rebootAt.ToString("yyyy-MM-ddTHH:mm:ss")
     $xml = @'
 <?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <Triggers>
     <TimeTrigger>
-      <StartBoundary>2025-10-29T18:00:00</StartBoundary>
+      <StartBoundary>{0}</StartBoundary>
       <Enabled>true</Enabled>
     </TimeTrigger>
   </Triggers>
@@ -124,11 +128,13 @@ if ($session) {
 </Task>
 '@
 
+    $xmlFinal = [string]::Format($xml, $startBoundary)
     $xmlPath = Join-Path $Root "RebootTask.xml"
-    $xml | Out-File -Encoding Unicode -FilePath $xmlPath -Force
-    schtasks /delete /tn "Win11_DeferredReboot" /f 2>$null
+    $xmlFinal | Out-File -Encoding Unicode -FilePath $xmlPath -Force
+
+    schtasks /delete /tn "Win11_DeferredReboot" /f 2>$null | Out-Null
     schtasks /create /tn "Win11_DeferredReboot" /xml $xmlPath /ru SYSTEM /f | Out-Null
-    Log "Reboot task created successfully."
+    Log "Reboot task created successfully for $($rebootAt.ToString('t'))."
 }
 else {
     Log "No logged-in user — rebooting automatically."
