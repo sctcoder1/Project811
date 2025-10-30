@@ -2,6 +2,7 @@
 run-upgrade.ps1
 Purpose:
   Execute Windows 11 setup.exe silently from extracted ISO folder.
+  Wait for Modern Setup Host to complete before prompting user or scheduling reboot.
   Assumes ISO contents are already in C:\Win11Upgrade\ISOFiles.
 #>
 
@@ -11,7 +12,10 @@ $IsoDir  = Join-Path $Root "ISOFiles"
 $Setup   = Join-Path $IsoDir "setup.exe"
 $LogFile = Join-Path $Root "run-upgrade.log"
 
-function Log($m){$t=(Get-Date).ToString("yyyy-MM-dd HH:mm:ss");Add-Content -Path $LogFile -Value "[$t] $m"}
+function Log($m) {
+    $t = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+    Add-Content -Path $LogFile -Value "[$t] $m"
+}
 
 Log "=== run-upgrade started under $env:USERNAME ==="
 
@@ -20,7 +24,7 @@ if (!(Test-Path $Setup)) {
     exit 1
 }
 
-# Bypass hardware checks
+# --- Bypass hardware checks ---
 try {
     $mo = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Setup\MoSetup"
     if (!(Test-Path $mo)) { New-Item -Path $mo -Force | Out-Null }
@@ -28,14 +32,15 @@ try {
     Log "Set bypass key."
 } catch { Log "Warning: failed to set bypass key. $_" }
 
-# Detect active user session
+# --- Detect active user session ---
 $UserActive = $false
 try {
     $users = (quser 2>$null)
     if ($users -match "Active") { $UserActive = $true; Log "Active user detected via quser." }
-} catch { }
+    else { Log "No active user detected." }
+} catch { Log "Could not determine active user via quser. $_" }
 
-# Build arguments
+# --- Build setup arguments ---
 if ($UserActive) {
     $Args = "/auto upgrade /quiet /NoReboot /Compat IgnoreWarning /DynamicUpdate Disable /Eula accept"
     Log "User logged in — upgrade will not auto-reboot."
@@ -44,11 +49,89 @@ if ($UserActive) {
     Log "No user detected — reboot allowed."
 }
 
-# Launch setup
+# --- Launch setup ---
 try {
     Log "Launching setup.exe..."
     Start-Process -FilePath $Setup -ArgumentList $Args -WindowStyle Hidden
     Log "Setup launched successfully."
-} catch { Log "ERROR: Failed to start setup.exe. $_" }
+} catch {
+    Log "ERROR: Failed to start setup.exe. $_"
+    exit 1
+}
 
-Log "run-upgrade complete."
+# --- Wait for Modern Setup Host to appear ---
+Log "Waiting for ModernSetupHost process..."
+while (-not (Get-Process -Name "ModernSetupHost" -ErrorAction SilentlyContinue)) {
+    Start-Sleep -Seconds 3
+}
+Log "ModernSetupHost detected."
+
+# --- Wait for setup to finish ---
+while (Get-Process -Name "ModernSetupHost" -ErrorAction SilentlyContinue) {
+    Start-Sleep -Seconds 10
+}
+Log "ModernSetupHost exited — staging phase complete."
+
+# --- Handle reboot scheduling ---
+$RebootTime = "18:00"  # 6 PM local time
+$session = (Get-CimInstance -ClassName Win32_ComputerSystem).UserName
+
+if ($session) {
+    Log "Active user session detected: $session"
+
+    # Notify user to save work and reboot
+    $msg = "Windows 11 upgrade is ready to install.`n`n" +
+           "Please save all work and reboot now to continue.`n" +
+           "If you do nothing, the system will reboot automatically at 6:00 PM."
+    try {
+        msg * "$msg" /time:300
+        Log "Displayed save-your-work message to active session."
+    } catch {
+        Log "Failed to send message: $_"
+    }
+
+    # Schedule reboot task for 6 PM
+    Log "Scheduling reboot task for 6:00 PM."
+    $xml = @"
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Triggers>
+    <TimeTrigger>
+      <StartBoundary>$(Get-Date -Hour 18 -Minute 0 -Second 0).ToString("yyyy-MM-ddTHH:mm:ss")</StartBoundary>
+      <Enabled>true</Enabled>
+    </TimeTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>SYSTEM</UserId>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>shutdown.exe</Command>
+      <Arguments>/r /t 60 /c "Windows 11 upgrade will now continue."</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"@
+
+    $xmlPath = Join-Path $Root "RebootTask.xml"
+    $xml | Out-File -Encoding Unicode -FilePath $xmlPath -Force
+    schtasks /delete /tn "Win11_DeferredReboot" /f 2>$null
+    schtasks /create /tn "Win11_DeferredReboot" /xml $xmlPath /ru SYSTEM /f | Out-Null
+    Log "Reboot task created successfully."
+}
+else {
+    Log "No logged-in user — rebooting immediately."
+    shutdown /r /t 60 /c "Windows 11 upgrade will now continue." | Out-Null
+}
+
+Log "=== run-upgrade complete ==="
