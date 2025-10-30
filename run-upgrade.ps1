@@ -92,12 +92,13 @@ if ($session) {
 
     # Schedule reboot task for 6 PM
     Log "Scheduling reboot task for 6:00 PM."
-    $xml = @"
+
+    $xml = @'
 <?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <Triggers>
     <TimeTrigger>
-      <StartBoundary>$(Get-Date -Hour 18 -Minute 0 -Second 0).ToString("yyyy-MM-ddTHH:mm:ss")</StartBoundary>
+      <StartBoundary>2025-10-29T18:00:00</StartBoundary>
       <Enabled>true</Enabled>
     </TimeTrigger>
   </Triggers>
@@ -121,7 +122,7 @@ if ($session) {
     </Exec>
   </Actions>
 </Task>
-"@
+'@
 
     $xmlPath = Join-Path $Root "RebootTask.xml"
     $xml | Out-File -Encoding Unicode -FilePath $xmlPath -Force
@@ -130,7 +131,7 @@ if ($session) {
     Log "Reboot task created successfully."
 }
 else {
-    Log "No logged-in user — rebooting immediately."
+    Log "No logged-in user — rebooting automatically."
     shutdown /r /t 60 /c "Windows 11 upgrade will now continue." | Out-Null
 }
 
