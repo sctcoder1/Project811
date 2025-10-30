@@ -1,8 +1,8 @@
 <#
 run-upgrade.ps1
 Purpose:
-  Execute Windows 11 setup.exe silently from extracted ISO folder.
-  After setup finishes, schedule an automatic reboot for 7 PM.
+  Executes Windows 11 setup.exe silently from extracted ISO folder.
+  After setup completes, schedules a reboot for 7 PM automatically.
 #>
 
 $ErrorActionPreference = "Stop"
@@ -64,47 +64,20 @@ Log "ModernSetupHost detected."
 while (Get-Process -Name "ModernSetupHost" -ErrorAction SilentlyContinue) { Start-Sleep 10 }
 Log "ModernSetupHost exited — staging phase complete."
 
-# --- Schedule silent reboot at 7 PM ---
+# --- Schedule reboot at 7 PM ---
 $now = Get-Date
 $rebootAt = (Get-Date -Hour 19 -Minute 0 -Second 0)
 if ($rebootAt -lt $now) { $rebootAt = $rebootAt.AddDays(1) }
 
-$startBoundary = $rebootAt.ToString("yyyy-MM-ddTHH:mm:ss")
-$xmlPath = Join-Path $Root "RebootTask.xml"
+Log "Scheduling reboot for $($rebootAt.ToString('yyyy-MM-dd HH:mm:ss'))."
 
-@"
-<?xml version="1.0" encoding="UTF-16"?>
-<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <Triggers>
-    <TimeTrigger>
-      <StartBoundary>$startBoundary</StartBoundary>
-      <Enabled>true</Enabled>
-    </TimeTrigger>
-  </Triggers>
-  <Principals>
-    <Principal id="Author">
-      <UserId>SYSTEM</UserId>
-      <RunLevel>HighestAvailable</RunLevel>
-    </Principal>
-  </Principals>
-  <Settings>
-    <AllowStartOnDemand>true</AllowStartOnDemand>
-    <StartWhenAvailable>true</StartWhenAvailable>
-    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
-    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
-    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
-  </Settings>
-  <Actions Context="Author">
-    <Exec>
-      <Command>shutdown.exe</Command>
-      <Arguments>/r /t 60 /c "Windows 11 upgrade will now continue."</Arguments>
-    </Exec>
-  </Actions>
-</Task>
-"@ | Out-File -Encoding Unicode -FilePath $xmlPath -Force
+# Format time for schtasks (HH:mm)
+$time = $rebootAt.ToString("HH:mm")
 
+# Remove any previous scheduled task and create a new one
 schtasks /delete /tn "Win11_DeferredReboot" /f 2>$null | Out-Null
-schtasks /create /tn "Win11_DeferredReboot" /xml $xmlPath /ru SYSTEM /f | Out-Null
-Log "Reboot scheduled for $($rebootAt.ToString('yyyy-MM-dd HH:mm'))."
+schtasks /create /tn "Win11_DeferredReboot" /sc once /st $time /tr "shutdown.exe /r /t 60 /c `"Windows 11 upgrade will now continue.`"" /ru SYSTEM /f | Out-Null
+
+Log "Reboot task created for $($rebootAt.ToString('t'))."
 
 Log "=== run-upgrade complete ==="
