@@ -75,7 +75,7 @@ Log "ModernSetupHost exited — staging phase complete."
 # --- Handle reboot scheduling ---
 $now = Get-Date
 $rebootAt = (Get-Date -Hour 18 -Minute 0 -Second 0)
-if ($rebootAt -lt $now) { $rebootAt = $rebootAt.AddDays(1) } # if 6 PM passed, schedule next day
+if ($rebootAt -lt $now) { $rebootAt = $rebootAt.AddDays(1) } # if 6 PM already passed, use tomorrow
 
 $session = (Get-CimInstance -ClassName Win32_ComputerSystem).UserName
 
@@ -97,12 +97,12 @@ if ($session) {
     Log "Scheduling reboot task for $($rebootAt.ToString('yyyy-MM-dd HH:mm:ss'))."
 
     $startBoundary = $rebootAt.ToString("yyyy-MM-ddTHH:mm:ss")
-    $xml = @'
+    $xml = @"
 <?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <Triggers>
     <TimeTrigger>
-      <StartBoundary>{0}</StartBoundary>
+      <StartBoundary>$startBoundary</StartBoundary>
       <Enabled>true</Enabled>
     </TimeTrigger>
   </Triggers>
@@ -126,11 +126,10 @@ if ($session) {
     </Exec>
   </Actions>
 </Task>
-'@
+"@
 
-    $xmlFinal = [string]::Format($xml, $startBoundary)
     $xmlPath = Join-Path $Root "RebootTask.xml"
-    $xmlFinal | Out-File -Encoding Unicode -FilePath $xmlPath -Force
+    $xml | Out-File -Encoding Unicode -FilePath $xmlPath -Force
 
     schtasks /delete /tn "Win11_DeferredReboot" /f 2>$null | Out-Null
     schtasks /create /tn "Win11_DeferredReboot" /xml $xmlPath /ru SYSTEM /f | Out-Null
